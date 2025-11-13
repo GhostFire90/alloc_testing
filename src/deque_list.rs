@@ -3,6 +3,7 @@ use core::ptr::NonNull;
 
 pub type Link<T> = Option<NonNull<Node<T>>>;
 
+#[derive(Debug, Clone)]
 pub struct Node<T>
 {
   pub(self) front: Link<T>,
@@ -88,6 +89,16 @@ impl<T> LinkedDeque<T>
     }
   }
 
+  pub fn peek_front(&self) -> Link<T>
+  {
+    self.front
+  }
+
+  pub fn peek_back(&self) -> Link<T>
+  {
+    self.back
+  }
+
   pub fn push_back(&mut self, new: NonNull<Node<T>>)
   {
     unsafe {
@@ -161,18 +172,27 @@ impl<T> LinkedDeque<T>
   {
     self.len == 0
   }
-}
 
-impl<T> Drop for LinkedDeque<T>
-{
-  fn drop(&mut self)
+  pub const fn new() -> Self
   {
-    assert_eq!(
-      self.len, 0,
-      "This list is not responsible for deallocation of the memory it contains, please empty it before it gets dropped"
-    );
+    Self {
+      front: None,
+      back: None,
+      len: 0,
+    }
   }
 }
+
+// impl<T> Drop for LinkedDeque<T>
+// {
+//   fn drop(&mut self)
+//   {
+//     assert_eq!(
+//       self.len, 0,
+//       "This list is not responsible for deallocation of the memory it contains, please empty it before it gets dropped"
+//     );
+//   }
+// }
 
 pub struct CursorMut<'a, T>
 {
@@ -237,6 +257,18 @@ impl<'a, T> CursorMut<'a, T>
   pub fn current(&mut self) -> Option<&mut T>
   {
     unsafe { self.current.map(|node| &mut (*node.as_ptr()).elem) }
+  }
+  pub fn current_link(&mut self) -> Link<T>
+  {
+    self.current
+  }
+  pub fn prev_link(&mut self) -> Link<T>
+  {
+    unsafe { self.current.and_then(|x| (*x.as_ptr()).back) }
+  }
+  pub fn next_link(&mut self) -> Link<T>
+  {
+    unsafe { self.current.and_then(|x| (*x.as_ptr()).front) }
   }
 
   pub fn peek_next(&mut self) -> Option<&mut T>
@@ -378,9 +410,19 @@ impl<'a, T> CursorMut<'a, T>
     if let Some(cur) = current
     {
       unsafe {
-        let n = &mut (*cur.as_ptr());
+        let r_current = &mut (*cur.as_ptr());
 
-        match (n.front, n.back)
+        if current == self.list.front
+        {
+          self.list.front = r_current.front;
+        }
+
+        if current == self.list.back
+        {
+          self.list.back = r_current.back;
+        }
+
+        match (r_current.front, r_current.back)
         {
           (None, Some(next)) => (*next.as_ptr()).front = None,
           (Some(prev), None) => (*prev.as_ptr()).back = None,
@@ -392,8 +434,8 @@ impl<'a, T> CursorMut<'a, T>
           _ => (),
         }
 
-        n.front = None;
-        n.back = None;
+        r_current.front = None;
+        r_current.back = None;
 
         self.list.len -= 1;
       }
@@ -403,15 +445,22 @@ impl<'a, T> CursorMut<'a, T>
 
   pub fn insert_before(&mut self, node: NonNull<Node<T>>)
   {
-    if let Some(cur) = self.current
+    if self.list.front == self.current
+    {
+      self.list.push_front(node);
+      self.move_next();
+    }
+    else if let Some(p_current) = self.current
     {
       unsafe {
-        let n = &mut (*cur.as_ptr());
-        (*node.as_ptr()).back = Some(cur);
-        if let Some(x) = n.front
+        let r_current = &mut (*p_current.as_ptr());
+
+        (*node.as_ptr()).back = Some(p_current);
+        if let Some(prev) = r_current.front
         {
-          (*x.as_ptr()).back = Some(node);
+          (*prev.as_ptr()).back = Some(node);
         }
+
         self.index = self.index.map(|x| x + 1);
         self.list.len += 1;
       }
