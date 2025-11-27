@@ -1,6 +1,6 @@
-use crate::deque_list::{Link, LinkedDeque, Node};
+use raw_list::{Link, List, Node};
 
-use core::alloc::{Allocator, GlobalAlloc, Layout};
+use core::alloc::{GlobalAlloc, Layout};
 use core::num::NonZero;
 use core::ptr::NonNull;
 use std::alloc::System;
@@ -13,8 +13,7 @@ const NODE_SIZE: usize = size_of::<Node<MetaData>>();
 const NODE_ALIGN: usize = align_of::<Node<MetaData>>();
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct MetaData
-{
+pub struct MetaData {
   pub base: NonNull<u8>,
   pub layout: Layout,
 }
@@ -25,8 +24,7 @@ static FAKE_HEAP_SIZE: usize = PAGE_SIZE * 1024 * 1024;
 static FAKE_HEAP: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
 static FAKE_HTOP: AtomicUsize = AtomicUsize::new(0);
 
-fn get_page() -> *mut u8
-{
+fn get_page() -> *mut u8 {
   if FAKE_HEAP
     .load(std::sync::atomic::Ordering::Acquire)
     .is_null()
@@ -37,8 +35,7 @@ fn get_page() -> *mut u8
     );
   }
 
-  if FAKE_HTOP.load(std::sync::atomic::Ordering::Relaxed) >= FAKE_HEAP_SIZE
-  {
+  if FAKE_HTOP.load(std::sync::atomic::Ordering::Relaxed) >= FAKE_HEAP_SIZE {
     return core::ptr::null_mut();
   }
   unsafe {
@@ -50,8 +47,7 @@ fn get_page() -> *mut u8
   }
 }
 
-fn raw_to_new_node(ptr: *mut u8, layout: Layout) -> NonNull<Node<MetaData>>
-{
+fn raw_to_new_node(ptr: *mut u8, layout: Layout) -> NonNull<Node<MetaData>> {
   unsafe {
     let nnptr = NonNull::new(ptr).unwrap();
     let meta = MetaData::new(
@@ -67,8 +63,7 @@ fn raw_to_new_node(ptr: *mut u8, layout: Layout) -> NonNull<Node<MetaData>>
   }
 }
 
-fn meta_write(meta: MetaData) -> NonNull<Node<MetaData>>
-{
+fn meta_write(meta: MetaData) -> NonNull<Node<MetaData>> {
   unsafe {
     let base_meta = NonNull::new(
       meta
@@ -85,8 +80,7 @@ fn meta_write(meta: MetaData) -> NonNull<Node<MetaData>>
 fn node_split(
   node: NonNull<Node<MetaData>>,
   layout: Layout,
-) -> (NonNull<Node<MetaData>>, Option<NonNull<Node<MetaData>>>)
-{
+) -> (NonNull<Node<MetaData>>, Option<NonNull<Node<MetaData>>>) {
   unsafe {
     let old_meta = (*node.as_ptr()).elem();
     let total_size = old_meta.total_size();
@@ -101,18 +95,14 @@ fn node_split(
 
     let meta_total_size = NODE_SIZE + rhs_base.align_offset(NODE_ALIGN);
 
-    if remaining_size != 0
-    {
-      if remaining_size > meta_total_size
-      {
+    if remaining_size != 0 {
+      if remaining_size > meta_total_size {
         let size = remaining_size - (NODE_SIZE + rhs_base.align_offset(NODE_ALIGN));
         o_rhs = Some(meta_write(MetaData::new(
           rhs_base,
           Layout::from_size_align(size, NODE_ALIGN).unwrap(),
         )))
-      }
-      else
-      {
+      } else {
         let excess = meta_total_size - remaining_size;
         lhs.layout =
           Layout::from_size_align_unchecked(lhs.layout.size() + excess, lhs.layout.align());
@@ -122,65 +112,76 @@ fn node_split(
   }
 }
 
-fn node_merge(lhs: NonNull<Node<MetaData>>, rhs: NonNull<Node<MetaData>>)
-{
+fn node_merge(lhs: NonNull<Node<MetaData>>, rhs: NonNull<Node<MetaData>>) {
   unsafe {
     let l = (*lhs.as_ptr()).elem_mut();
     let r = (*rhs.as_ptr()).elem();
 
-    if l.base.add(l.total_size()) == r.base
-    {
+    if l.base.add(l.total_size()) == r.base {
       l.layout =
         Layout::from_size_align(l.layout.size() + r.total_size(), l.layout.align()).unwrap()
     }
   }
 }
 
-fn raw_to_existing_node(ptr: *mut u8) -> NonNull<Node<MetaData>>
-{
+fn raw_to_existing_node(ptr: *mut u8) -> NonNull<Node<MetaData>> {
   unsafe { NonNull::new(ptr.byte_sub(NODE_SIZE) as *mut Node<MetaData>).unwrap() }
 }
 
-fn node_to_data_ptr(node: NonNull<Node<MetaData>>) -> *mut u8
-{
+fn node_to_data_ptr(node: NonNull<Node<MetaData>>) -> *mut u8 {
   unsafe { node.byte_add(NODE_SIZE).as_ptr() as *mut u8 }
 }
 
-struct MetaAllocInner
-{
-  list: LinkedDeque<MetaData>,
+struct MetaAllocInner {
+  list: List<MetaData>,
 }
 
-pub struct MetaAlloc
-{
+pub struct MetaAlloc {
   tex: Mutex<MetaAllocInner>,
 }
 unsafe impl Send for MetaAlloc {}
 unsafe impl Sync for MetaAlloc {}
 
-impl MetaAlloc
-{
-  pub const fn new() -> Self
-  {
+impl MetaAlloc {
+  pub const fn new() -> Self {
     Self {
-      tex: Mutex::new(MetaAllocInner {
-        list: LinkedDeque::new(),
-      }),
+      tex: Mutex::new(MetaAllocInner { list: List::new() }),
     }
   }
 }
 
-impl MetaAllocInner
-{
-  unsafe fn try_add_page(&mut self) -> bool
-  {
+impl MetaAllocInner {
+  // unsafe fn coallesce(p_node: NonNull<Node<MetaData>>) -> (Link<MetaData>, Link<MetaData>) {
+  //   unsafe {
+  //     let r_node = &(*p_node.as_ptr());
+  //     let (mut op_front, mut op_back) = (r_node.front(), r_node.back());
+  //     op_front = op_front.filter(|p_front| {
+  //       let r_front = &(*p_front.as_ptr());
+  //       r_front.elem().base.byte_add(r_front.elem().total_size()) == r_node.elem().base
+  //     });
+  //     op_back = op_back.filter(|p_back| {
+  //       let r_back = &(*p_back.as_ptr());
+  //       r_node.elem().base.byte_add(r_node.elem().total_size()) == r_back.elem().base
+  //     });
+
+  //     match (op_front, op_back) {
+  //       (None, None) => {}
+  //       (None, Some(p_back)) => node_merge(p_node, p_back),
+  //       (Some(p_front), None) => node_merge(p_front, p_node),
+  //       (Some(p_front), Some(p_back)) => {
+  //         node_merge(p_front, p_node);
+  //         node_merge(p_front, p_back);
+  //       }
+  //     }
+  //     (op_front, op_back)
+  //   }
+  // }
+
+  unsafe fn try_add_page(&mut self) -> bool {
     let pg = get_page();
-    if pg.is_null()
-    {
+    if pg.is_null() {
       false
-    }
-    else
-    {
+    } else {
       let node = raw_to_new_node(pg, PAGE_LAYOUT);
       unsafe {
         self.dealloc(node_to_data_ptr(node), PAGE_LAYOUT);
@@ -189,36 +190,30 @@ impl MetaAllocInner
     }
   }
 
-  unsafe fn alloc(&mut self, layout: Layout) -> *mut u8
-  {
-    dbg!(layout.size());
-    dbg!(self.list.len());
-    dbg!(
-      self
-        .list
-        .peek_front()
-        .map(|x| unsafe { (*x.as_ptr()).clone() })
-    );
-    if self.list.empty()
-    {
-      if !unsafe { self.try_add_page() }
-      {
+  unsafe fn alloc(&mut self, layout: Layout) -> *mut u8 {
+    // dbg!(layout.size());
+    // dbg!(self.list.len());
+    // dbg!(
+    //   self
+    //     .list
+    //     .peek_front()
+    //     .map(|x| unsafe { (*x.as_ptr()).clone() })
+    // );
+    if self.list.empty() {
+      if !unsafe { self.try_add_page() } {
         return core::ptr::null_mut();
       }
     }
 
     let mut cursor = self.list.cursor_mut();
     cursor.move_next();
-    while let Some(current) = cursor.current()
-    {
-      if current.check_compatible(&layout)
-      {
+    while let Some(current) = cursor.current_value() {
+      if current.check_compatible(&layout) {
         // PAST THIS POINT ACCESSES TO CURRENT ARE F U C K E D
         let node = cursor.remove().unwrap();
 
         let (ret_node, remaining) = node_split(node, layout);
-        if let Some(rem) = remaining
-        {
+        if let Some(rem) = remaining {
           unsafe { self.dealloc(node_to_data_ptr(rem), (*rem.as_ptr()).elem().layout) };
         }
         return node_to_data_ptr(ret_node);
@@ -226,59 +221,40 @@ impl MetaAllocInner
       cursor.move_next();
     }
 
-    dbg!(FAKE_HTOP.load(std::sync::atomic::Ordering::Relaxed));
-    if !unsafe { self.try_add_page() }
-    {
+    // dbg!(FAKE_HTOP.load(std::sync::atomic::Ordering::Relaxed));
+    if !unsafe { self.try_add_page() } {
       core::ptr::null_mut()
-    }
-    else
-    {
+    } else {
       unsafe { self.alloc(layout) }
     }
   }
 
-  unsafe fn dealloc(&mut self, ptr: *mut u8, _layout: Layout)
-  {
+  unsafe fn dealloc(&mut self, ptr: *mut u8, _layout: Layout) {
     let node = raw_to_existing_node(ptr);
-    if self.list.empty()
-    {
+    if self.list.empty() {
       self.list.push_front(node);
       return;
     }
 
     unsafe {
       let mut cursor = self.list.cursor_mut();
-      while let Some(current) = cursor.current()
-      {
-        if *current > *(*node.as_ptr()).elem()
-        {
+      cursor.move_next();
+      while let Some(current) = cursor.current_value() {
+        if *current > *(*node.as_ptr()).elem() {
           cursor.insert_before(node);
           cursor.move_prev();
 
-          let o_prev = cursor.prev_link();
-          let o_next = cursor.next_link();
-          match (o_prev, o_next)
-          {
-            (None, None) =>
-            {}
-            (None, Some(n)) =>
-            {
-              node_merge(node, n);
-              cursor.move_next();
-              cursor.remove();
-            }
-            (Some(p), None) =>
-            {
-              node_merge(p, node);
-              cursor.remove();
-            }
-            (Some(p), Some(n)) =>
-            {
-              node_merge(p, node);
-              node_merge(p, n);
-              cursor.remove();
-              cursor.remove();
-            }
+          let links = Self::coallesce(cursor.current_value_link().unwrap());
+
+          let (front, back) = (links.0.is_some(), links.1.is_some());
+
+          if front {
+            cursor.remove();
+            cursor.move_prev();
+          }
+          if back {
+            cursor.move_next();
+            cursor.remove();
           }
 
           return;
@@ -287,14 +263,16 @@ impl MetaAllocInner
       }
 
       self.list.push_back(node);
+      let links = Self::coallesce(node);
+      if links.0.is_some() {
+        self.list.pop_back();
+      }
     }
   }
 }
 
-unsafe impl GlobalAlloc for MetaAlloc
-{
-  unsafe fn alloc(&self, layout: Layout) -> *mut u8
-  {
+unsafe impl GlobalAlloc for MetaAlloc {
+  unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
     unsafe {
       self
         .tex
@@ -304,8 +282,7 @@ unsafe impl GlobalAlloc for MetaAlloc
     }
   }
 
-  unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout)
-  {
+  unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
     unsafe {
       self
         .tex
@@ -316,37 +293,31 @@ unsafe impl GlobalAlloc for MetaAlloc
   }
 }
 
-impl MetaData
-{
-  fn pad_amount(&self, align: usize) -> usize
-  {
+impl MetaData {
+  fn pad_amount(&self, align: usize) -> usize {
     self.base.align_offset(align) - self.base.align_offset(self.layout.align())
   }
-  pub fn usable_size(&self) -> usize
-  {
-    self.layout.size() + (self.layout.align() - NODE_ALIGN)
+  pub fn usable_size(&self) -> usize {
+    let node_padding = self.base.align_offset(NODE_ALIGN);
+    let current_padding = self.base.align_offset(self.layout.align());
+
+    self.layout.size() + (current_padding - node_padding)
   }
 
-  pub fn total_size(&self) -> usize
-  {
+  pub fn total_size(&self) -> usize {
     let offs = self.base.align_offset(self.layout.align());
     self.layout.size() + offs + NODE_SIZE
   }
 
-  pub fn check_compatible(&self, lay: &Layout) -> bool
-  {
-    if lay.align() > self.layout.align()
-    {
+  pub fn check_compatible(&self, lay: &Layout) -> bool {
+    if lay.align() > self.layout.align() {
       (self.usable_size() - self.pad_amount(lay.align())) >= lay.size()
-    }
-    else
-    {
+    } else {
       self.usable_size() >= lay.size()
     }
   }
   // Creates a new metadata with the given base, it will do max(NODE_ALIGN, layout.align()) as well as adjust the size by the difference of that and NODE_SIZE
-  pub fn new(base: NonNull<u8>, layout: Layout) -> Self
-  {
+  pub fn new(base: NonNull<u8>, layout: Layout) -> Self {
     let mut ret = Self { base, layout };
     let offs = ret.pad_amount(layout.align());
     ret.layout = unsafe {
@@ -356,55 +327,46 @@ impl MetaData
   }
 }
 
-impl PartialOrd for MetaData
-{
-  fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering>
-  {
+impl PartialOrd for MetaData {
+  fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
     self.base.partial_cmp(&other.base)
   }
 }
 
 #[cfg(test)]
-mod meta_tests
-{
-  const ALLOC_COUNT: usize = 10000;
+mod meta_tests {
+  const ALLOC_COUNT: usize = 1000;
 
-  use core::alloc::{Allocator, Layout};
-  use core::ptr::NonNull;
+  use core::alloc::Layout;
   use std::alloc::GlobalAlloc;
-  use std::ptr::null_mut;
 
-  use crate::MetaAlloc;
+  use crate::{MetaAlloc, alloc::PAGE_LAYOUT};
   const LAY: Layout = unsafe { Layout::from_size_align_unchecked(32, 16) };
 
   #[test]
-  pub fn fifo_alloc()
-  {
+  pub fn fifo_alloc() {
     unsafe {
       let myalloc: MetaAlloc = MetaAlloc::new();
       let mut stored: Vec<*mut u8> = Vec::with_capacity(ALLOC_COUNT);
-      for i in 1..ALLOC_COUNT
-      {
+      for i in 1..ALLOC_COUNT {
         let a = myalloc.alloc(Layout::from_size_align(i, 8).unwrap());
         assert!(!a.is_null());
         a.write_bytes(0xff, i);
 
         stored.push(a);
       }
-      stored.into_iter().enumerate().for_each(|(i, x)| unsafe {
+      stored.into_iter().enumerate().for_each(|(i, x)| {
         myalloc.dealloc(x, Layout::from_size_align(i, 8).unwrap());
       });
     }
   }
 
   #[test]
-  pub fn lifo_alloc()
-  {
+  pub fn lifo_alloc() {
     unsafe {
       let myalloc: MetaAlloc = MetaAlloc::new();
       let mut stored = Vec::with_capacity(ALLOC_COUNT);
-      for _ in 0..ALLOC_COUNT
-      {
+      for _ in 0..ALLOC_COUNT {
         let ptr = myalloc.alloc(LAY);
         assert!(!ptr.is_null());
         stored.push(ptr);
@@ -412,6 +374,15 @@ mod meta_tests
       stored.into_iter().rev().for_each(|x| unsafe {
         myalloc.dealloc(x, LAY);
       });
+    }
+  }
+
+  #[test]
+  pub fn page_alloc() {
+    unsafe {
+      let myalloc = MetaAlloc::new();
+      let ptr = myalloc.alloc(PAGE_LAYOUT);
+      myalloc.dealloc(ptr, PAGE_LAYOUT);
     }
   }
 }

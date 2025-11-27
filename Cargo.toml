@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-debug_print = "1.0.0"
+"raw_list" = { path = "../raw_list" }
 
 [dev-dependencies]
 
