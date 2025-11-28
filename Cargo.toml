@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-"raw_list" = { path = "../raw_list" }
+"raw_list" = { git = "https://github.com/GhostFire90/raw_list.git" }
 
 [dev-dependencies]
 
