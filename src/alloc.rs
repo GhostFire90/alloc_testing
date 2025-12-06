@@ -194,14 +194,6 @@ impl MetaAllocInner
 
   unsafe fn alloc(&mut self, layout: Layout) -> *mut u8
   {
-    // dbg!(layout.size());
-    // dbg!(self.list.len());
-    // dbg!(
-    //   self
-    //     .list
-    //     .peek_front()
-    //     .map(|x| unsafe { (*x.as_ptr()).clone() })
-    // );
     if self.list.empty()
     {
       if !unsafe { self.try_add_page() }
@@ -216,7 +208,6 @@ impl MetaAllocInner
     {
       if current.check_compatible(&layout)
       {
-        // PAST THIS POINT ACCESSES TO CURRENT ARE F U C K E D
         let node = cursor.remove().unwrap();
 
         let (ret_node, remaining) = node_split(node, layout);
@@ -229,7 +220,6 @@ impl MetaAllocInner
       cursor.move_next();
     }
 
-    // dbg!(FAKE_HTOP.load(std::sync::atomic::Ordering::Relaxed));
     if !unsafe { self.try_add_page() }
     {
       core::ptr::null_mut()
