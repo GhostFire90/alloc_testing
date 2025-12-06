@@ -12,3 +12,4 @@ dependencies = [
 [[package]]
 name = "raw_list"
 version = "0.1.0"
+source = "git+https://github.com/GhostFire90/raw_list.git#98a86885192c13521d45d0d43321d6c38eeef259"

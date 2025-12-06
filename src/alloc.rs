@@ -1,10 +1,8 @@
 use raw_list::{Link, List, Node};
 
 use core::alloc::{GlobalAlloc, Layout};
-use core::num::NonZero;
 use core::ptr::NonNull;
 use std::alloc::System;
-use std::cell::UnsafeCell;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicPtr, AtomicUsize};
 
@@ -47,24 +45,6 @@ fn get_page() -> *mut u8
       .add(FAKE_HTOP.load(std::sync::atomic::Ordering::Relaxed)) as *mut u8;
     FAKE_HTOP.fetch_add(PAGE_SIZE, std::sync::atomic::Ordering::Relaxed);
     ptr
-  }
-}
-
-fn raw_to_new_node(ptr: *mut u8, layout: Layout) -> NonNull<Node<MetaData>>
-{
-  unsafe {
-    let nnptr = NonNull::new(ptr).unwrap();
-    let meta = MetaData::new(
-      nnptr,
-      Layout::from_size_align_unchecked(layout.size() - NODE_SIZE, layout.align()),
-    );
-
-    let mut data_ptr = nnptr.byte_add(NODE_SIZE);
-    data_ptr = data_ptr.byte_add(data_ptr.align_offset(meta.layout.align()));
-
-    let meta_location = raw_to_existing_node(data_ptr.as_ptr());
-    *(meta_location.as_ptr()) = Node::new(meta);
-    meta_location
   }
 }
 
@@ -114,7 +94,7 @@ fn node_split(
       {
         let excess = meta_total_size - remaining_size;
         lhs.layout =
-          Layout::from_size_align_unchecked(lhs.layout.size() + excess, lhs.layout.align());
+          Layout::from_size_align(lhs.layout.size() + excess, lhs.layout.align()).unwrap();
       }
     }
     (meta_write(lhs), o_rhs)
@@ -435,6 +415,7 @@ mod meta_tests
       {
         let a = myalloc.alloc(Layout::from_size_align(i, 8).unwrap());
         assert!(!a.is_null());
+        assert!(a.is_aligned_to(8));
         a.write_bytes(0xff, i);
 
         stored.push(a);
@@ -455,6 +436,7 @@ mod meta_tests
       {
         let ptr = myalloc.alloc(LAY);
         assert!(!ptr.is_null());
+        assert!(ptr.is_aligned_to(LAY.align()));
         stored.push(ptr);
       }
       stored.into_iter().rev().for_each(|x| {
