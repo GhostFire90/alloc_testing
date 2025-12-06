@@ -4,7 +4,6 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::NonNull;
 use std::alloc::System;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicPtr, AtomicUsize};
 
 const PAGE_SIZE: usize = 4096;
 const NODE_SIZE: usize = size_of::<Node<MetaData>>();
@@ -28,6 +27,18 @@ struct FakeHeap
 }
 // only using when wrapped in a mutex
 unsafe impl Send for FakeHeap {}
+impl Drop for FakeHeap
+{
+  fn drop(&mut self)
+  {
+    unsafe {
+      System.dealloc(
+        self.base,
+        Layout::from_size_align(FAKE_HEAP_SIZE, PAGE_SIZE).unwrap(),
+      );
+    }
+  }
+}
 
 static FAKE_HEAP: Mutex<FakeHeap> = Mutex::new(FakeHeap {
   current_top: 0,
@@ -110,7 +121,16 @@ fn node_split(
 
 fn raw_to_existing_node(ptr: *mut u8) -> NonNull<Node<MetaData>>
 {
-  unsafe { NonNull::new(ptr.byte_sub(NODE_SIZE) as *mut Node<MetaData>).unwrap() }
+  unsafe {
+    NonNull::new(
+      FAKE_HEAP
+        .lock()
+        .expect("FAKE HEAP POISON RAW TO EXISTING")
+        .base
+        .with_addr(ptr.byte_sub(NODE_SIZE).addr()) as *mut Node<MetaData>,
+    )
+    .unwrap()
+  }
 }
 
 fn node_to_data_ptr(node: NonNull<Node<MetaData>>) -> *mut u8
