@@ -20,30 +20,37 @@ pub struct MetaData
 const PAGE_LAYOUT: Layout = unsafe { Layout::from_size_align_unchecked(PAGE_SIZE, PAGE_SIZE) };
 
 static FAKE_HEAP_SIZE: usize = PAGE_SIZE * 1024 * 1024;
-static FAKE_HEAP: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
-static FAKE_HTOP: AtomicUsize = AtomicUsize::new(0);
+
+struct FakeHeap
+{
+  base: *mut u8,
+  current_top: usize,
+}
+// only using when wrapped in a mutex
+unsafe impl Send for FakeHeap {}
+
+static FAKE_HEAP: Mutex<FakeHeap> = Mutex::new(FakeHeap {
+  current_top: 0,
+  base: core::ptr::null_mut(),
+});
 
 fn get_page() -> *mut u8
 {
-  if FAKE_HEAP
-    .load(std::sync::atomic::Ordering::Acquire)
-    .is_null()
+  let mut guard = FAKE_HEAP.lock().expect("GET PAGE FAKE HEAP POISON");
+  if guard.base.is_null()
   {
-    FAKE_HEAP.store(
-      unsafe { System.alloc(Layout::from_size_align(FAKE_HEAP_SIZE, PAGE_SIZE).unwrap()) },
-      std::sync::atomic::Ordering::Release,
-    );
+    guard.base =
+      unsafe { System.alloc(Layout::from_size_align(FAKE_HEAP_SIZE, PAGE_SIZE).unwrap()) };
   }
 
-  if FAKE_HTOP.load(std::sync::atomic::Ordering::Relaxed) >= FAKE_HEAP_SIZE
+  if guard.current_top >= FAKE_HEAP_SIZE
   {
     return core::ptr::null_mut();
   }
+
   unsafe {
-    let ptr = FAKE_HEAP
-      .load(std::sync::atomic::Ordering::Relaxed)
-      .add(FAKE_HTOP.load(std::sync::atomic::Ordering::Relaxed)) as *mut u8;
-    FAKE_HTOP.fetch_add(PAGE_SIZE, std::sync::atomic::Ordering::Relaxed);
+    let ptr = guard.base.add(guard.current_top);
+    guard.current_top += PAGE_SIZE;
     ptr
   }
 }
