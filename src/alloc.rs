@@ -6,13 +6,19 @@ use std::alloc::System;
 use std::sync::Mutex;
 
 const PAGE_SIZE: usize = 4096;
+
+// NODE_ALIGN*5
 const NODE_SIZE: usize = size_of::<Node<MetaData>>();
+// NODE_ALIGN = 8
 const NODE_ALIGN: usize = align_of::<Node<MetaData>>();
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetaData
 {
+  // original base ptr, pre alignment
   pub base: NonNull<u8>,
+
+  // requested layout, no modifications
   pub layout: Layout,
 }
 
@@ -69,11 +75,9 @@ fn get_page() -> *mut u8
 fn meta_write(meta: MetaData) -> NonNull<Node<MetaData>>
 {
   unsafe {
-    let mut data_ptr = meta.base.byte_add(NODE_SIZE);
-    data_ptr = data_ptr.byte_add(data_ptr.align_offset(meta.layout.align()));
-    let meta_location = raw_to_existing_node(data_ptr.as_ptr());
-    (*meta_location.as_ptr()) = Node::new(meta);
-    meta_location
+    let meta_ptr = meta.meta_location();
+    (*meta_ptr.as_ptr()) = Node::new(meta);
+    meta_ptr
   }
 }
 
@@ -83,39 +87,29 @@ fn node_split(
 ) -> (NonNull<Node<MetaData>>, Option<NonNull<Node<MetaData>>>)
 {
   unsafe {
-    let old_meta = (*node.as_ptr()).elem();
-    let align = layout.align().max(NODE_ALIGN);
-    let needed_size = MetaData::pad_amount(old_meta.base, align) + NODE_SIZE + layout.size();
-    let total_layout = Layout::from_size_align(needed_size, align).unwrap();
+    let original = (*node.as_ptr()).elem().clone();
 
-    let total_size = old_meta.total_size();
-    let mut lhs = MetaData::new(old_meta.base, total_layout);
+    let mut lhs = MetaData::new((*node.as_ptr()).elem().base, layout);
 
-    let lhs_size = lhs.total_size();
-    assert!(lhs_size == needed_size);
+    let remaining_size = original.total_size() - lhs.total_size();
+    let rhs_ptr = lhs.base.byte_add(lhs.total_size());
+    let required_size = MetaData::default_meta_offset(rhs_ptr) + NODE_SIZE;
 
-    let remaining_size = total_size - lhs_size;
-
-    let rhs_base = lhs.base.add(lhs_size);
-    let mut o_rhs = None;
-
-    let meta_total_size = MetaData::optimal_padding(rhs_base) + NODE_SIZE;
-
-    if remaining_size != 0
+    if remaining_size > required_size
     {
-      if remaining_size > meta_total_size
-      {
-        let rhs_meta = MetaData::new_blank(rhs_base, remaining_size);
-        o_rhs = Some(meta_write(rhs_meta));
-      }
-      else
-      {
-        let excess = meta_total_size - remaining_size;
-        lhs.layout =
-          Layout::from_size_align(lhs.layout.size() + excess, lhs.layout.align()).unwrap();
-      }
+      let rhs = MetaData::new(
+        rhs_ptr,
+        Layout::from_size_align(remaining_size, NODE_ALIGN).unwrap(),
+      );
+
+      (meta_write(lhs), Some(meta_write(rhs)))
     }
-    (meta_write(lhs), o_rhs)
+    else
+    {
+      lhs.layout =
+        Layout::from_size_align(lhs.layout.size() + remaining_size, lhs.layout.size()).unwrap();
+      (meta_write(lhs), None)
+    }
   }
 }
 
@@ -135,7 +129,7 @@ fn raw_to_existing_node(ptr: *mut u8) -> NonNull<Node<MetaData>>
 
 fn node_to_data_ptr(node: NonNull<Node<MetaData>>) -> *mut u8
 {
-  unsafe { node.byte_add(NODE_SIZE).as_ptr() as *mut u8 }
+  unsafe { (*node.as_ptr()).elem().data_location().as_ptr() }
 }
 
 fn merge_right(link: Link<MetaData>) -> bool
@@ -334,45 +328,54 @@ unsafe impl GlobalAlloc for MetaAlloc
 
 impl MetaData
 {
-  fn pad_amount(base: NonNull<u8>, align: usize) -> usize
+  pub fn data_location(&self) -> NonNull<u8>
   {
-    unsafe {
-      let mut data_ptr = base.byte_add(NODE_SIZE);
-      data_ptr = data_ptr.byte_add(data_ptr.align_offset(align));
-      data_ptr.byte_sub(NODE_SIZE).offset_from_unsigned(base)
-    }
+    unsafe { self.base.byte_add(self.extra_size()) }
   }
 
-  // padding if align was <= NODE_ALIGN
-  pub fn optimal_padding(base: NonNull<u8>) -> usize
+  pub fn meta_location(&self) -> NonNull<Node<MetaData>>
   {
-    unsafe {
-      let mut data_ptr = base.byte_add(NODE_SIZE);
-      data_ptr = data_ptr.byte_add(data_ptr.align_offset(NODE_ALIGN));
-      data_ptr.byte_sub(NODE_SIZE).offset_from_unsigned(base)
-    }
+    unsafe { self.data_location().byte_sub(NODE_SIZE).cast() }
+  }
+
+  pub fn extra_size(&self) -> usize
+  {
+    let align = self.base.align_offset(self.layout.align().max(NODE_ALIGN));
+
+    NODE_SIZE.next_multiple_of(self.layout.align()) + align
+  }
+
+  pub fn default_meta_offset(base: NonNull<u8>) -> usize
+  {
+    let temp_meta = MetaData::new(
+      base.clone(),
+      Layout::from_size_align(0, NODE_ALIGN).unwrap(),
+    );
+    unsafe { temp_meta.meta_location().byte_offset_from_unsigned(base) }
   }
 
   pub fn usable_size(&self) -> usize
   {
-    let node_padding = Self::optimal_padding(self.base);
-    let current_padding = Self::pad_amount(self.base, self.layout.align());
+    let node_padding = Self::default_meta_offset(self.base);
+    let current_padding = unsafe { self.meta_location().byte_offset_from_unsigned(self.base) };
 
     self.layout.size() + (current_padding - node_padding)
   }
 
   pub fn total_size(&self) -> usize
   {
-    Self::pad_amount(self.base, self.layout.align()) + NODE_SIZE + self.layout.size()
+    self.layout.size() + self.extra_size()
   }
 
   pub fn check_compatible(&self, lay: &Layout) -> bool
   {
     if lay.align() > self.layout.align()
     {
+      let new_meta = Self::new(self.base.clone(), lay.clone());
+
       self
-        .usable_size()
-        .checked_sub(Self::pad_amount(self.base, lay.align()))
+        .total_size()
+        .checked_sub(new_meta.extra_size())
         .map_or(false, |x| x >= lay.size())
     }
     else
@@ -380,19 +383,14 @@ impl MetaData
       self.usable_size() >= lay.size()
     }
   }
-  // Creates a new metadata with the given base, it will do max(NODE_ALIGN, layout.align()) as well as adjust the size by the difference of that and NODE_SIZE
+
   pub fn new(base: NonNull<u8>, layout: Layout) -> Self
   {
-    let mut ret = Self { base, layout };
-    let align = layout.align().max(NODE_ALIGN);
-
-    let offs = Self::pad_amount(ret.base, align);
-    ret.layout = Layout::from_size_align(ret.layout.size() - offs - NODE_SIZE, align).unwrap();
-    ret
+    Self { base, layout }
   }
   pub fn new_blank(base: NonNull<u8>, size: usize) -> Self
   {
-    let padding = Self::optimal_padding(base);
+    let padding = Self::default_meta_offset(base);
     let total_removed = padding + NODE_SIZE;
     let ret = Self {
       base,
