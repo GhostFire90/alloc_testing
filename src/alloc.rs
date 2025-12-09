@@ -12,6 +12,26 @@ const NODE_SIZE: usize = size_of::<Node<MetaData>>();
 // NODE_ALIGN = 8
 const NODE_ALIGN: usize = align_of::<Node<MetaData>>();
 
+// Time to steal from raw_rc
+//
+// - Node<MetaData> is a link in a doubly linked list containing allocation metadata
+// - The alignment of the allocation is `align_of::<Node<MetaData>>().max(layout.align())`.
+// - The value is stored at offset `size_of::<Node<MetaData>>().next_multiple_of(layout.align)`.
+// - The size of the allocation is
+//   `size_of::<Node<MetaData>>().next_multiple_of(layout.align()) + layout.size()`.
+// - The `Node<MetaData>` object is stored at offset
+//   `size_of::<Node<MetaData>>().next_multiple_of(layout.align()) - size_of::<Node<MetaData>>()`.
+//
+// The following table shows the order and size of each component in a reference-counted allocation
+// of a `T` value:
+//
+// | Component   | Size                                                                                                                                                              |
+// | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+// | Padding     | `basePtr.align_offset(align_of<Node<MetaData>>().max(layout.align())) size_of::<Node<MetaData>>().next_multiple_of(layout.align()) - size_of::<Node<MetaData>>()` |
+// | `RefCounts` | `size_of::<Node<MetaData>>()`                                                                                                                                     |
+// | `UserData`  | `layout.size`                                                                                                                                                     |
+//
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetaData
 {
@@ -88,11 +108,13 @@ fn node_split(
 {
   unsafe {
     let original = (*node.as_ptr()).elem().clone();
+    let block_size = original.total_size();
 
-    let mut lhs = MetaData::new((*node.as_ptr()).elem().base, layout);
+    let mut lhs = MetaData::new(original.base, layout);
+    let lhs_size = lhs.total_size();
 
-    let remaining_size = original.total_size() - lhs.total_size();
-    let rhs_ptr = lhs.base.byte_add(lhs.total_size());
+    let remaining_size = block_size - lhs_size;
+    let rhs_ptr = lhs.base.byte_add(lhs_size);
     let required_size = MetaData::default_meta_offset(rhs_ptr) + NODE_SIZE;
 
     if remaining_size > required_size
@@ -330,16 +352,19 @@ impl MetaData
 {
   pub fn data_location(&self) -> NonNull<u8>
   {
+    // base + padding + metadata size
     unsafe { self.base.byte_add(self.extra_size()) }
   }
 
   pub fn meta_location(&self) -> NonNull<Node<MetaData>>
   {
+    // data_location - node size
     unsafe { self.data_location().byte_sub(NODE_SIZE).cast() }
   }
 
   pub fn extra_size(&self) -> usize
   {
+    // bytes to align to `self.layout.align().max(NODE_ALIGN)` so the rest of the calculation is correct
     let align = self.base.align_offset(self.layout.align().max(NODE_ALIGN));
 
     NODE_SIZE.next_multiple_of(self.layout.align()) + align
@@ -388,6 +413,8 @@ impl MetaData
   {
     Self { base, layout }
   }
+
+  // used to create a blank unallocated node with the correct sizing from a new page
   pub fn new_blank(base: NonNull<u8>, size: usize) -> Self
   {
     let padding = Self::default_meta_offset(base);
