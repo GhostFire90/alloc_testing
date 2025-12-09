@@ -121,7 +121,7 @@ fn node_split(
     {
       let rhs = MetaData::new(
         rhs_ptr,
-        Layout::from_size_align(remaining_size, NODE_ALIGN).unwrap(),
+        Layout::from_size_align(remaining_size - required_size, NODE_ALIGN).unwrap(),
       );
 
       (meta_write(lhs), Some(meta_write(rhs)))
@@ -129,7 +129,7 @@ fn node_split(
     else
     {
       lhs.layout =
-        Layout::from_size_align(lhs.layout.size() + remaining_size, lhs.layout.size()).unwrap();
+        Layout::from_size_align(lhs.layout.size() + remaining_size, lhs.layout.align()).unwrap();
       (meta_write(lhs), None)
     }
   }
